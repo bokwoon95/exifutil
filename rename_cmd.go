@@ -11,13 +11,11 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
-	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sync"
-	"time"
 )
 
 type RenameCmd struct {
@@ -96,12 +94,6 @@ func RenameCommand(args []string) (*RenameCmd, error) {
 }
 
 func (renameCmd *RenameCmd) Run(ctx context.Context) error {
-	type Exif struct {
-		FileSize               string
-		SubSecDateTimeOriginal string
-		CreateDate             string
-		TimeZone               string
-	}
 	var waitGroup sync.WaitGroup
 	defer waitGroup.Wait()
 	ctx, cancel := context.WithCancel(ctx)
@@ -172,32 +164,12 @@ func (renameCmd *RenameCmd) Run(ctx context.Context) error {
 						}
 						break
 					}
-					var exifs []Exif
-					err = json.Unmarshal(buf.Bytes(), &exifs)
-					if err != nil {
-						renameCmd.logger.Error(err.Error(), slog.String("data", buf.String()))
-						break
-					}
-					exif := exifs[0]
-					var creationTime time.Time
-					if exif.SubSecDateTimeOriginal != "" {
-						creationTime, err = time.ParseInLocation("2006:01:02 15:04:05.000-07:00", exif.SubSecDateTimeOriginal, time.UTC)
-						if err != nil {
-							logger.Error(err.Error(), slog.String("SubSecDateTimeOriginal", exif.SubSecDateTimeOriginal))
-							break
-						}
-					} else if exif.CreateDate != "" {
-						creationTime, err = time.ParseInLocation("2006:01:02 15:04:05-07:00", exif.CreateDate+exif.TimeZone, time.UTC)
-						if err != nil {
-							logger.Error(err.Error(), slog.String("SubSecDateTimeOriginal", exif.SubSecDateTimeOriginal))
-							break
-						}
-						creationTime = creationTime.Add(time.Duration(rand.IntN(1000)) * time.Millisecond)
-					} else {
+					exif := parseExif(logger, buf.Bytes())
+					if exif.CreationTime.IsZero() {
 						logger.Error("unable to fetch file creation time", slog.String("data", buf.String()))
 						break
 					}
-					newFilePath := filepath.Join(filepath.Dir(filePath), creationTime.Format("2006-01-02T150405.000-0700") + filepath.Ext(filePath))
+					newFilePath := filepath.Join(filepath.Dir(filePath), exif.CreationTime.Format("2006-01-02T150405.000-0700") + filepath.Ext(filePath))
 					if renameCmd.DryRun {
 						b, err := json.Marshal(exif)
 						if err != nil {
