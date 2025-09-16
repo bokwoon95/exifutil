@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"math/rand/v2"
 	"os"
@@ -19,13 +21,14 @@ import (
 )
 
 type PartitionCmd struct {
-	FileRegexps []*regexp.Regexp
-	NumWorkers  int
-	Verbose     bool
-	DryRun      bool
-	Stdout      io.Writer
-	Stderr      io.Writer
-	logger      *slog.Logger
+	FileRegexps     []*regexp.Regexp
+	NumWorkers      int
+	Verbose         bool
+	DryRun          bool
+	ReplaceIfExists bool
+	Stdout          io.Writer
+	Stderr          io.Writer
+	logger          *slog.Logger
 }
 
 func PartitionCommand(args []string) (*PartitionCmd, error) {
@@ -37,6 +40,7 @@ func PartitionCommand(args []string) (*PartitionCmd, error) {
 	flagset.IntVar(&partitionCmd.NumWorkers, "num-workers", 8, "Number of concurrent workers.")
 	flagset.BoolVar(&partitionCmd.Verbose, "verbose", false, "Verbose output.")
 	flagset.BoolVar(&partitionCmd.DryRun, "dry-run", false, "Print partition operations without executing.")
+	flagset.BoolVar(&partitionCmd.ReplaceIfExists, "replace-if-exists", false, "If a file with the same name already exists in the date directory, replace it.")
 	flagset.Func("file", "Include file regex. Can be repeated.", func(value string) error {
 		r, err := compileRegexp(value)
 		if err != nil {
@@ -86,10 +90,6 @@ func (partitionCmd *PartitionCmd) Run(ctx context.Context) error {
 	defer waitGroup.Wait()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	workingDirectory, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	filePaths := make(chan string)
 	for i := 0; i < partitionCmd.NumWorkers; i++ {
 		exifToolCmd := exec.Command("exiftool", "-stay_open", "True", "-@", "-")
@@ -181,15 +181,53 @@ func (partitionCmd *PartitionCmd) Run(ctx context.Context) error {
 						logger.Error("unable to fetch file creation time", slog.String("data", buf.String()))
 						break
 					}
-					b, err := json.Marshal(exif)
-					if err != nil {
-						logger.Warn(err.Error())
+					dateDirPath := filepath.Join(filepath.Dir(filePath), creationTime.Format("2006-01-02"))
+					newFilePath := filepath.Join(dateDirPath, filepath.Base(filePath))
+					if partitionCmd.DryRun {
+						b, err := json.Marshal(exif)
+						if err != nil {
+							logger.Warn(err.Error())
+						}
+						fmt.Fprintf(partitionCmd.Stdout, "%s => %s %s\n", filePath, newFilePath, string(b))
+						break
 					}
-					fmt.Fprintf(partitionCmd.Stdout, "%s %s\n", filePath, string(b))
+					err = os.MkdirAll(dateDirPath, 0755)
+					if err != nil {
+						logger.Error(err.Error(), slog.String("dateDirPath", dateDirPath))
+						break
+					}
+					if partitionCmd.ReplaceIfExists {
+						err := os.Rename(filePath, newFilePath)
+						if err != nil {
+							logger.Error(err.Error(), slog.String("newFilePath", newFilePath))
+							break
+						}
+						logger.Info("moved file", slog.String("newFilePath", newFilePath))
+						break
+					}
+					_, err = os.Stat(newFilePath)
+					if err != nil {
+						if !errors.Is(err, fs.ErrNotExist) {
+							logger.Error(err.Error(), slog.String("name", newFilePath))
+							break
+						}
+						err := os.Rename(filePath, newFilePath)
+						if err != nil {
+							logger.Error(err.Error(), slog.String("newFilePath", newFilePath))
+							break
+						}
+						logger.Info("moved file", slog.String("newFilePath", newFilePath))
+					} else {
+						logger.Info("file already exists, skipping (use -replace-if-exists to replace it)", slog.String("newFilePath", newFilePath))
+					}
 				}
 			}
 		}()
-		dirEntries, err := os.ReadDir(workingDirectory)
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		dirEntries, err := os.ReadDir(cwd)
 		if err != nil {
 			return err
 		}
@@ -203,7 +241,7 @@ func (partitionCmd *PartitionCmd) Run(ctx context.Context) error {
 					select {
 					case <-ctx.Done():
 						return ctx.Err()
-					case filePaths <- filepath.Join(workingDirectory, name):
+					case filePaths <- filepath.Join(cwd, name):
 						break
 					}
 				}

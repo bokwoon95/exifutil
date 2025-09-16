@@ -218,7 +218,7 @@ func (renameCmd *RenameCmd) Run(ctx context.Context) error {
 					_, err = os.Stat(newFilePath)
 					if err != nil {
 						if !errors.Is(err, fs.ErrNotExist) {
-							renameCmd.logger.Error(err.Error(), slog.String("name", newFilePath))
+							logger.Error(err.Error(), slog.String("name", newFilePath))
 							break
 						}
 						err := os.Rename(filePath, newFilePath)
