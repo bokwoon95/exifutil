@@ -14,34 +14,44 @@ type Exif struct {
 	CreationTime time.Time
 }
 
-func parseExif(logger *slog.Logger, data []byte) Exif {
+func parseExifs(logger *slog.Logger, data []byte) []Exif {
 	type RawExif struct {
 		FileSize               string
 		SubSecDateTimeOriginal string
 		CreateDate             string
 		TimeZone               string
 	}
-	var exif Exif
 	var rawExifs []RawExif
 	err := json.Unmarshal(data, &rawExifs)
 	if err != nil {
 		logger.Error(err.Error(), slog.String("data", string(data)))
-		return exif
+		return []Exif{}
 	}
-	rawExif := rawExifs[0]
-	if rawExif.SubSecDateTimeOriginal != "" {
-		exif.CreationTime, err = time.ParseInLocation("2006:01:02 15:04:05.000-07:00", rawExif.SubSecDateTimeOriginal, time.UTC)
-		if err != nil {
-			logger.Error(err.Error(), slog.String("SubSecDateTimeOriginal", rawExif.SubSecDateTimeOriginal))
+	exifs := make([]Exif, 0, len(rawExifs))
+	for _, rawExif := range rawExifs {
+		var exif Exif
+		if rawExif.SubSecDateTimeOriginal != "" {
+			if strings.Contains(rawExif.SubSecDateTimeOriginal, "+") || strings.Contains(rawExif.SubSecDateTimeOriginal, "-") {
+				exif.CreationTime, err = time.ParseInLocation("2006:01:02 15:04:05.999-07:00", rawExif.SubSecDateTimeOriginal, time.UTC)
+				if err != nil {
+					logger.Error(err.Error(), slog.String("SubSecDateTimeOriginal", rawExif.SubSecDateTimeOriginal))
+				}
+			} else {
+				exif.CreationTime, err = time.ParseInLocation("2006:01:02 15:04:05.999", rawExif.SubSecDateTimeOriginal, time.UTC)
+				if err != nil {
+					logger.Error(err.Error(), slog.String("SubSecDateTimeOriginal", rawExif.SubSecDateTimeOriginal))
+				}
+			}
+		} else if rawExif.CreateDate != "" {
+			exif.CreationTime, err = time.ParseInLocation("2006:01:02 15:04:05-07:00", rawExif.CreateDate+rawExif.TimeZone, time.UTC)
+			if err != nil {
+				logger.Error(err.Error(), slog.String("SubSecDateTimeOriginal", rawExif.SubSecDateTimeOriginal))
+			}
+			exif.CreationTime = exif.CreationTime.Add(time.Duration(rand.IntN(1000)) * time.Millisecond)
 		}
-	} else if rawExif.CreateDate != "" {
-		exif.CreationTime, err = time.ParseInLocation("2006:01:02 15:04:05-07:00", rawExif.CreateDate+rawExif.TimeZone, time.UTC)
-		if err != nil {
-			logger.Error(err.Error(), slog.String("SubSecDateTimeOriginal", rawExif.SubSecDateTimeOriginal))
-		}
-		exif.CreationTime = exif.CreationTime.Add(time.Duration(rand.IntN(1000)) * time.Millisecond)
+		exifs = append(exifs, exif)
 	}
-	return exif
+	return exifs
 }
 
 func compileRegexp(pattern string) (*regexp.Regexp, error) {

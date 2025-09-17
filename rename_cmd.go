@@ -164,7 +164,12 @@ func (renameCmd *RenameCmd) Run(ctx context.Context) error {
 						}
 						break
 					}
-					exif := parseExif(logger, buf.Bytes())
+					exifs := parseExifs(logger, buf.Bytes())
+					if len(exifs) == 0 {
+						logger.Error("exiftool returned empty array", slog.String("data", buf.String()))
+						break
+					}
+					exif := exifs[0]
 					if exif.CreationTime.IsZero() {
 						logger.Error("unable to fetch file creation time", slog.String("data", buf.String()))
 						break
